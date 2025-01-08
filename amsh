@@ -1,0 +1,133 @@
+#!/bin/bash
+
+# Încarcă completările bash
+if [ -f /etc/bash_completion ]; then
+    . /etc/bash_completion
+fi
+
+# Fișierul de log
+LOG_FILE="$HOME/.amsh_log"
+
+# Fișierul de configurare
+CONFIG_FILE="$HOME/.amsh_config"
+
+# Funcție pentru logare
+log_action() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> "$LOG_FILE"
+}
+
+# Validarea sintaxei comenzii
+validate_command() {
+    local command=$1
+    # Comenzi permise
+    if [[ "$command" =~ ^(cd|mount|umount|ls|echo|pwd|exit|clear|help|clear_log)$ ]]; then
+        return 0
+    else
+        echo "Comanda '$command' nu este validă."
+        return 1
+    fi
+}
+
+# Funcție pentru montare cu verificări suplimentare
+mount_if_needed() {
+    local mount_point=$1
+    local fs_type=$2
+
+    if [ ! -d "$mount_point" ]; then
+        echo "Punctul de montare '$mount_point' nu există."
+        log_action "Eroare: Punctul de montare '$mount_point' nu există."
+        return 1
+    fi
+
+    if ! findmnt "$mount_point" &>/dev/null; then
+        echo "Montăm $mount_point..."
+        sudo mount -t "$fs_type" "$mount_point" || {
+            echo "Eroare la montare. Verificați permisiunile sau configurarea."
+            log_action "Eroare la montarea $mount_point cu tip $fs_type"
+            return 1
+        }
+        log_action "Montat $mount_point cu tip $fs_type"
+    else
+        echo "$mount_point este deja montat."
+    fi
+}
+
+# Funcție pentru demontare automată
+monitor_mountpoints() {
+    local mount_point=$1
+    if ! lsof +D "$mount_point" &>/dev/null; then
+        echo "Punctul de montare $mount_point nu este folosit. Dezinstalare..."
+        sudo umount "$mount_point" && log_action "Demontează $mount_point" || {
+            echo "Eroare la dezinstalare."
+            log_action "Eroare la dezinstalarea $mount_point"
+        }
+    else
+        echo "Punctul de montare $mount_point este încă folosit."
+    fi
+}
+
+# Funcție pentru detectarea dispozitivelor USB
+auto_mount_usb() {
+    lsblk -o NAME,MOUNTPOINT | grep -q "sdb" || {
+        echo "Dispozitiv USB 'sdb' nu este conectat."
+        log_action "Dispozitiv USB 'sdb' nu detectat."
+        return 1
+    }
+    echo "Montăm automat dispozitivul USB..."
+    sudo mount /dev/sdb1 /mnt/usb && log_action "Montat automat USB în /mnt/usb" || {
+        echo "Eroare la montarea dispozitivului USB."
+        log_action "Eroare la montarea dispozitivului USB."
+    }
+}
+
+# Funcție pentru completări automate
+_amsh_completions() {
+    local cur=${COMP_WORDS[COMP_CWORD]}
+    local commands="cd mount umount ls echo pwd exit clear help clear_log"
+    if [[ ${COMP_CWORD} -eq 1 ]]; then
+        COMPREPLY=( $(compgen -W "$commands" -- "$cur") )
+    else
+        COMPREPLY=()
+    fi
+}
+
+if [[ $- == *i* ]]; then
+    complete -F _amsh_completions amsh.sh
+fi
+
+# Curățare log
+clear_log() {
+    echo -n > "$LOG_FILE"
+    echo "Log-ul a fost curățat."
+}
+
+# Loop principal
+while true; do
+    echo -n "amsh> "
+    read command args
+
+    validate_command "$command" || continue
+
+    case $command in
+        cd)
+            cd "$args" || echo "Nu se poate schimba directorul."
+            ;;
+        mount)
+            mount_if_needed "$args" "ext4"
+            ;;
+        umount)
+            sudo umount "$args" && log_action "Demontează $args"
+            ;;
+        clear_log)
+            clear_log
+            ;;
+        exit)
+            echo "Ieșire din amsh..."
+            log_action "Ieșire din amsh."
+            break
+            ;;
+        *)
+            sh -c "$command $args" || log_action "Eroare la comanda '$command $args'"
+            ;;
+    esac
+done
